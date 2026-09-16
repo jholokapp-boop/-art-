@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="bn">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ONNX Runtime Web - এআই ইমেজ আপস্কেলার</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Microsoft ONNX Runtime Web CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.js"></script>
+    <style>
+        .glass {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+    </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen flex flex-col items-center justify-center p-4">
+
+    <div class="max-w-xl w-full glass rounded-2xl p-6 shadow-2xl border border-slate-800">
+        <header class="text-center mb-6">
+            <h1 class="text-2xl font-bold bg-gradient-to-r from-cyan-400 to-blue-500 bg-clip-text text-transparent">ONNX Web AI আপস্কেলার</h1>
+            <p class="text-xs text-slate-400 mt-1">মাইক্রোসফট ONNX Runtime Web এবং লোকাল এআই মডেল দিয়ে চালিত</p>
+        </header>
+
+        <!-- Model Loading Status Box -->
+        <div id="statusBox" class="mb-6 p-4 rounded-xl bg-slate-900 border border-slate-800 text-center">
+            <div id="spinner" class="inline-block animate-spin rounded-full h-5 w-5 border-b-2 border-cyan-400 mb-2"></div>
+            <p id="statusText" class="text-xs text-cyan-300 font-medium">এআই মডেল ডাউনলোড ও ইনিশিয়ালাইজ হচ্ছে...</p>
+        </div>
+
+        <!-- Upload Box -->
+        <div id="dropZone" class="border-2 border-dashed border-slate-800 rounded-xl p-6 text-center transition-all bg-slate-900/50 relative overflow-hidden opacity-50 pointer-events-none" id="uploadArea">
+            <input type="file" id="imageInput" accept="image/*" class="absolute inset-0 opacity-0 cursor-pointer" disabled>
+            <div id="uploadPrompt" class="flex flex-col items-center">
+                <svg class="w-10 h-10 text-cyan-400 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path>
+                </svg>
+                <p class="text-sm font-medium text-slate-300">ছবি এখানে ড্রপ করুন অথবা ব্রাউজ করুন</p>
+            </div>
+            <div id="previewContainer" class="hidden relative">
+                <img id="sourcePreview" class="max-h-40 mx-auto rounded-lg shadow-md object-contain">
+                <p id="fileName" class="text-xs text-slate-400 mt-2 truncate"></p>
+            </div>
+        </div>
+
+        <!-- Action Button -->
+        <button id="processBtn" disabled class="w-full mt-5 py-3 bg-cyan-600 hover:bg-cyan-500 disabled:bg-slate-900 disabled:text-slate-600 font-semibold rounded-xl shadow-lg transition-all text-sm cursor-pointer disabled:cursor-not-allowed">
+            এআই দিয়ে প্রসেস করুন
+        </button>
+
+        <!-- Result Section -->
+        <div id="resultSection" class="hidden mt-6 pt-6 border-t border-slate-800 text-center">
+            <h2 class="text-sm font-semibold text-slate-300 mb-3">আউটপুট ছবি (AI Enhanced)</h2>
+            <div class="bg-slate-900 p-2 rounded-xl border border-slate-800 max-h-60 overflow-auto mb-4 flex justify-center">
+                <canvas id="outputCanvas" class="rounded-lg shadow-inner max-w-full"></canvas>
+            </div>
+            <a id="downloadBtn" download="onnx-enhanced.png" class="block w-full py-3 bg-emerald-600 hover:bg-emerald-500 font-semibold rounded-xl shadow-lg transition-all text-sm text-center text-white">
+                ডাউনलोड করুন
+            </a>
+        </div>
+    </div>
+
+    <script>
+        let session = null;
+        const statusBox = document.getElementById('statusBox');
+        const statusText = document.getElementById('statusText');
+        const spinner = document.getElementById('spinner');
+        const dropZone = document.getElementById('dropZone');
+        const imageInput = document.getElementById('imageInput');
+        const uploadPrompt = document.getElementById('uploadPrompt');
+        const previewContainer = document.getElementById('previewContainer');
+        const sourcePreview = document.getElementById('sourcePreview');
+        const fileName = document.getElementById('fileName');
+        const processBtn = document.getElementById('processBtn');
+        const resultSection = document.getElementById('resultSection');
+        const outputCanvas = document.getElementById('outputCanvas');
+        const downloadBtn = document.getElementById('downloadBtn');
+
+        let uploadedImage = null;
+
+        // মাইক্রোসফট ONNX মডেল লোড করা (মাইক্রোসফটের অফিশিয়াল মডেল জু থেকে সুপার-রিসোলিউশন মডেল)
+        async function loadAIModel() {
+            try {
+                // ওয়াসম (WASM) পাথ সেটআপ
+                ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/";
+                
+                // মডেলের লিংক (Microsoft ONNX Model Zoo থেকে সুপার-রিসোলিউশন মডেল)
+                const modelUrl = "https://onnxruntimegcp.blob.core.windows.net/models/v1/super_resolution/super_resolution.onnx";
+                
+                statusText.textContent = "এআই মডেল ডাউনলোড হচ্ছে (প্রায় ৩-৫ এমবি)...";
+                
+                // সেশন তৈরি
+                session = await ort.InferenceSession.create(modelUrl, { executionProviders: ['wasm'] });
+                
+                // সফলভাবে লোড হলে UI আনলক করা
+                spinner.style.display = 'none';
+                statusText.textContent = "মডেল সফলভাবে লোড হয়েছে! এখন ছবি আপলোড করুন।";
+                statusBox.classList.replace('border-slate-800', 'border-cyan-900');
+                statusBox.style.background = 'rgba(8, 51, 68, 0.3)';
+                
+                dropZone.classList.remove('opacity-50', 'pointer-events-none');
+                imageInput.disabled = false;
+            } catch (err) {
+                console.error(err);
+                spinner.style.display = 'none';
+                statusText.textContent = "মডেল লোড করতে সমস্যা হয়েছে। ইন্টারনেট সংযোগ চেক করুন।";
+                statusBox.classList.replace('border-slate-800', 'border-red-900');
+            }
+        }
+
+        // পেজ লোড হওয়ার সাথে সাথে মডেল ডাউনলোড শুরু হবে
+        loadAIModel();
+
+        imageInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (file) {
+                const reader = new FileReader();
+                reader.onload = (event) => {
+                    sourcePreview.src = event.target.result;
+                    fileName.textContent = file.name;
+                    uploadPrompt.classList.add('hidden');
+                    previewContainer.classList.remove('hidden');
+                    processBtn.disabled = false;
+                    
+                    uploadedImage = new Image();
+                    uploadedImage.src = event.target.result;
+                };
+                reader.readAsDataURL(file);
+            }
+        });
+
+        processBtn.addEventListener('click', async () => {
+            if (!session || !uploadedImage) return;
+
+            processBtn.disabled = true;
+            processBtn.textContent = "প্রসেসিং হচ্ছে...";
+
+            try {
+                // ছবিটিকে ক্যানভাসে নিয়ে YCbCr বা RGB টেনসরে রূপান্তর করার প্রস্তুতি
+                const tempCanvas = document.createElement('canvas');
+                const ctx = tempCanvas.getContext('2d');
+                
+                // এই মডেলটি সাধারণত নির্দিষ্ট ইনপুট সাইজ বা ছোট ইমেজ প্রিফার করে
+                const w = 224;
+                const h = 224;
+                tempCanvas.width = w;
+                tempCanvas.height = h;
+                ctx.drawImage(uploadedImage, 0, 0, w, h);
+                
+                const imgData = ctx.getImageData(0, 0, w, h);
+                const inputData = new Float32Array(3 * w * h);
+
+                // RGB ডাটা আলাদা করা এবং নরমালাইজ করা
+                for (let i = 0; i < w * h; i++) {
+                    inputData[i] = imgData.data[i * 4] / 255.0;         // R
+                    inputData[i + w * h] = imgData.data[i * 4 + 1] / 255.0; // G
+                    inputData[i + w * h * 2] = imgData.data[i * 4 + 2] / 255.0; // B
+                }
+
+                const tensor = new ort.Tensor('float32', inputData, [1, 3, h, w]);
+                const feeds = { [session.inputNames[0]]: tensor };
+                
+                // ONNX রানটাইম দিয়ে ইনফারেন্স চালানো
+                const results = await session.run(feeds);
+                const output = results[session.outputNames[0]];
+
+                // আউটপুট ক্যানভাসে রেন্ডার করা
+                const outW = w * 3; // মডেল অনুযায়ী স্কেল
+                const outH = h * 3;
+                outputCanvas.width = outW;
+                outputCanvas.height = outH;
+                const outCtx = outputCanvas.getContext('2d');
+                const outImgData = outCtx.createImageData(outW, outH);
+
+                const dataR = output.data;
+                const dataG = output.data.subarray(outW * outH);
+                const dataB = output.data.subarray(outW * outH * 2);
+
+                for (let i = 0; i < outW * outH; i++) {
+                    outImgData.data[i * 4] = Math.min(Math.max(dataR[i] * 255, 0), 255);
+                    outImgData.data[i * 4 + 1] = Math.min(Math.max(dataG[i] * 255, 0), 255);
+                    outImgData.data[i * 4 + 2] = Math.min(Math.max(dataB[i] * 255, 0), 255);
+                    outImgData.data[i * 4 + 3] = 255;
+                }
+
+                outCtx.putImageData(outImgData, 0, 0);
+
+                downloadBtn.href = outputCanvas.toDataURL('image/png');
+                resultSection.classList.remove('hidden');
+                processBtn.disabled = false;
+                processBtn.textContent = "এআই দিয়ে প্রসেস করুন";
+            } catch (err) {
+                console.error(err);
+                alert("প্রসেসিংয়ের সময় ত্রুটি ঘটেছে।");
+                processBtn.disabled = false;
+                processBtn.textContent = "এআই দিয়ে প্রসেস করুন";
+            }
+        });
+    </script>
+</body>
+</html>
